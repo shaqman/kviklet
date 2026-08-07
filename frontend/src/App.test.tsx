@@ -86,6 +86,25 @@ afterAll(() => server.close());
 afterEach(() => server.resetHandlers());
 
 describe("App not logged in", () => {
+  test("checks authentication once during an unauthenticated redirect", async () => {
+    let statusRequests = 0;
+    server.use(
+      http.get("http://localhost:8081/status", () => {
+        statusRequests += 1;
+        return new HttpResponse(null, { status: 401 });
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Sign in to Kviklet");
+    await waitFor(() => expect(statusRequests).toBe(1));
+  });
+
   test("renders sign in text", async () => {
     render(
       <MemoryRouter>

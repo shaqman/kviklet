@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useContext, FC } from "react";
+import "../UserWorker.ts";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import { ThemeContext, ThemeStatusContext } from "./ThemeStatusProvider";
 

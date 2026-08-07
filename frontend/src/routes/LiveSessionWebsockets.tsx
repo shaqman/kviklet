@@ -5,6 +5,7 @@ import React, {
   useState,
   MouseEvent,
 } from "react";
+import "../UserWorker.ts";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import Button from "../components/Button";
 import MultiResult from "../components/MultiResult";

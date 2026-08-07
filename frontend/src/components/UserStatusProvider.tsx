@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StatusResponse, checklogin } from "../api/StatusApi";
-import { useLocation } from "react-router-dom";
 
 type UserContext = {
   userStatus: StatusResponse | false | undefined;
@@ -17,44 +16,52 @@ type Props = {
 };
 
 export const UserStatusProvider: React.FC<Props> = ({ children }) => {
-  const [userStatus, setUserStatus] = useState<UserContext>({
-    userStatus: undefined,
-    refreshState: async () => {},
-  });
+  const [userStatus, setUserStatus] = useState<
+    StatusResponse | false | undefined
+  >(undefined);
+  const statusRequest = useRef<Promise<void> | null>(null);
 
-  const location = useLocation();
-  const fetchStatus = async () => {
-    try {
-      const status = await checklogin();
-      const statusObject = {
-        userStatus: status,
-        refreshState: fetchStatus,
-      };
-      setUserStatus(statusObject);
-    } catch (error) {
-      console.error("Failed to fetch user status:", error);
+  const fetchStatus = useCallback(async (): Promise<void> => {
+    if (statusRequest.current) {
+      return statusRequest.current;
     }
-  };
 
-  const handleVisibilityChange = () => {
+    const request = checklogin()
+      .then((status) => {
+        setUserStatus(status);
+      })
+      .catch((error) => {
+        console.error("Failed to fetch user status:", error);
+      })
+      .finally(() => {
+        statusRequest.current = null;
+      });
+
+    statusRequest.current = request;
+    return request;
+  }, []);
+
+  const handleVisibilityChange = useCallback(() => {
     if (document.visibilityState === "visible") {
       void fetchStatus();
     }
-  };
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    void fetchStatus();
+  }, [fetchStatus]);
 
   useEffect(() => {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
-
-  useEffect(() => {
-    void fetchStatus();
-  }, [location.pathname]);
+  }, [handleVisibilityChange]);
 
   return (
-    <UserStatusContext.Provider value={userStatus}>
+    <UserStatusContext.Provider
+      value={{ userStatus, refreshState: fetchStatus }}
+    >
       {children}
     </UserStatusContext.Provider>
   );
