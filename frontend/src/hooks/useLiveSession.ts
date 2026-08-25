@@ -10,6 +10,10 @@ import {
 import { z } from "zod";
 import debounce from "lodash/debounce";
 import useNotification from "./useNotification";
+import {
+  appendLiveSessionChunk,
+  type ChunkBuffer,
+} from "../api/LiveSessionChunks";
 
 type ExecuteResolver = () => void;
 
@@ -18,6 +22,7 @@ const useLiveSession = (
   setContent: (content: string) => void,
 ) => {
   const ws = useRef<WebSocket | null>(null);
+  const chunkBuffersRef = useRef<Map<string, ChunkBuffer>>(new Map());
   const executeResolverRef = useRef<ExecuteResolver | null>(null);
   const inFlightRefsRef = useRef<Set<string>>(new Set());
   const [results, setResults] = useState<ExecuteResponseResult[] | undefined>(
@@ -65,6 +70,7 @@ const useLiveSession = (
 
     socket.onclose = (event) => {
       console.log("WebSocket connection closed", event);
+      chunkBuffersRef.current.clear();
       if (!event.wasClean) {
         console.error("Connection lost unexpectedly. Please refresh the page.");
         addNotification({
@@ -79,6 +85,7 @@ const useLiveSession = (
     ws.current = socket;
 
     return () => {
+      chunkBuffersRef.current.clear();
       if (socket.readyState === WebSocket.OPEN) {
         socket.close();
       }
@@ -101,6 +108,18 @@ const useLiveSession = (
       }
 
       const messageData = message.data;
+
+      if (messageData.type === "chunk") {
+        const assembledMessage = appendLiveSessionChunk(
+          chunkBuffersRef.current,
+          messageData,
+        );
+        if (assembledMessage === undefined) {
+          return;
+        }
+        handleWebSocketMessage(JSON.parse(assembledMessage));
+        return;
+      }
 
       console.log(messageData);
       switch (messageData.type) {

@@ -250,9 +250,14 @@ class SessionWebsocketHandler(
 
     private fun sendMessage(session: WebSocketSession, message: ResponseMessage) {
         try {
-            logger.info("Sending message to ${session.id}: $message")
+            val frames = WebSocketMessageChunker.encode(message, objectMapper)
+            logger.info(
+                "Sending ${message::class.simpleName} message to ${session.id} in ${frames.size} frame(s)",
+            )
             synchronized(session) {
-                session.sendMessage(TextMessage(objectMapper.writeValueAsString(message)))
+                frames.forEach { frame ->
+                    session.sendMessage(TextMessage(frame))
+                }
             }
         } catch (e: Exception) {
             logger.error("Error sending message", e)

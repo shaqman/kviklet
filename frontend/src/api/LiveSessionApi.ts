@@ -65,10 +65,20 @@ const errorMessage = z.object({
   error: z.string(),
 });
 
+const chunkMessage = z.object({
+  type: z.literal("chunk"),
+  sessionId: z.string(),
+  messageId: z.string(),
+  index: z.number().int().nonnegative(),
+  total: z.number().int().positive(),
+  payload: z.string(),
+});
+
 const responseMessage = z.discriminatedUnion("type", [
   statusMessage,
   resultMessage,
   errorMessage,
+  chunkMessage,
 ]);
 
 export {
@@ -78,5 +88,6 @@ export {
   cancelMessage,
   resultMessage,
   errorMessage,
+  chunkMessage,
   responseMessage,
 };
