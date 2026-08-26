@@ -12,6 +12,7 @@ import debounce from "lodash/debounce";
 import useNotification from "./useNotification";
 import {
   appendLiveSessionChunk,
+  encodeLiveSessionMessage,
   type ChunkBuffer,
 } from "../api/LiveSessionChunks";
 
@@ -237,7 +238,8 @@ const useLiveSession = (
 
     try {
       const validatedMessage = schema.parse(message) as z.infer<T>;
-      ws.current.send(JSON.stringify(validatedMessage));
+      const frames = encodeLiveSessionMessage(JSON.stringify(validatedMessage));
+      frames.forEach((frame) => ws.current?.send(frame));
     } catch (error) {
       if (error instanceof z.ZodError) {
         console.error("Invalid message format:", error.errors);

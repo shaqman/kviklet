@@ -1,4 +1,7 @@
+export const MAX_WEBSOCKET_MESSAGE_SIZE = 4 * 1024;
 export const MAX_CHUNK_COUNT = 10_000;
+export const MAX_CHUNK_PAYLOAD_SIZE = 512;
+const MAX_CHUNK_MESSAGE_ID_LENGTH = 128;
 const MAX_PENDING_CHUNK_MESSAGES = 16;
 
 export interface LiveSessionChunk {
@@ -7,6 +10,40 @@ export interface LiveSessionChunk {
   total: number;
   payload: string;
 }
+
+export const encodeLiveSessionMessage = (
+  serializedMessage: string,
+  messageId?: string,
+): string[] => {
+  if (serializedMessage.length <= MAX_WEBSOCKET_MESSAGE_SIZE) {
+    return [serializedMessage];
+  }
+
+  const resolvedMessageId = messageId ?? crypto.randomUUID();
+  if (
+    !resolvedMessageId ||
+    resolvedMessageId.length > MAX_CHUNK_MESSAGE_ID_LENGTH
+  ) {
+    throw new Error("Invalid WebSocket message chunk id");
+  }
+
+  const payloads = serializedMessage.match(
+    new RegExp(`.{1,${MAX_CHUNK_PAYLOAD_SIZE}}`, "gs"),
+  ) ?? [];
+  if (payloads.length > MAX_CHUNK_COUNT) {
+    throw new Error("WebSocket message is too large");
+  }
+
+  return payloads.map((payload, index) =>
+    JSON.stringify({
+      type: "chunk",
+      messageId: resolvedMessageId,
+      index,
+      total: payloads.length,
+      payload,
+    }),
+  );
+};
 
 export interface ChunkBuffer {
   total: number;
@@ -19,12 +56,15 @@ export const appendLiveSessionChunk = (
   chunk: LiveSessionChunk,
 ): string | undefined => {
   if (
+    !chunk.messageId ||
+    chunk.messageId.length > MAX_CHUNK_MESSAGE_ID_LENGTH ||
     !Number.isInteger(chunk.total) ||
     chunk.total < 1 ||
     chunk.total > MAX_CHUNK_COUNT ||
     !Number.isInteger(chunk.index) ||
     chunk.index < 0 ||
-    chunk.index >= chunk.total
+    chunk.index >= chunk.total ||
+    chunk.payload.length > MAX_CHUNK_PAYLOAD_SIZE
   ) {
     throw new Error("Invalid WebSocket message chunk");
   }

@@ -24,6 +24,7 @@ import org.springframework.web.socket.WebSocketSession
 import org.springframework.web.socket.handler.TextWebSocketHandler
 import org.springframework.web.util.UriComponentsBuilder
 import org.springframework.web.util.UriUtils
+import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
@@ -32,6 +33,7 @@ import java.util.concurrent.Executors
     JsonSubTypes.Type(value = UpdateContentMessage::class, name = "update_content"),
     JsonSubTypes.Type(value = ExecuteMessage::class, name = "execute"),
     JsonSubTypes.Type(value = CancelMessage::class, name = "cancel"),
+    JsonSubTypes.Type(value = ChunkMessage::class, name = "chunk"),
 )
 sealed class WebSocketMessage
 
@@ -40,6 +42,13 @@ data class UpdateContentMessage(val content: String, val ref: String) : WebSocke
 data class ExecuteMessage(val statement: String) : WebSocketMessage()
 
 object CancelMessage : WebSocketMessage()
+
+data class ChunkMessage(
+    val messageId: String,
+    val index: Int,
+    val total: Int,
+    val payload: String,
+) : WebSocketMessage()
 
 sealed class ResponseMessage(open val sessionId: LiveSessionId)
 data class ErrorResponseMessage(val type: String = "error", override val sessionId: LiveSessionId, val error: String) :
@@ -71,6 +80,7 @@ class SessionWebsocketHandler(
     private val logger = LoggerFactory.getLogger(SessionWebsocketHandler::class.java)
     private val sessionObservers = ConcurrentHashMap<LiveSessionId, MutableSet<SessionObserver>>()
     private val sessionToLiveSessionMap = ConcurrentHashMap<String, LiveSessionId>()
+    private val requestChunkBuffers = ConcurrentHashMap<String, MutableMap<String, WebSocketChunkBuffer>>()
 
     // Executor that propagates SecurityContext to background threads
     private val queryExecutor = DelegatingSecurityContextExecutorService(
@@ -111,6 +121,7 @@ class SessionWebsocketHandler(
     }
 
     override fun afterConnectionClosed(session: WebSocketSession, status: CloseStatus) {
+        requestChunkBuffers.remove(session.id)
         val liveSessionId = sessionToLiveSessionMap[session.id] ?: return
         sessionObservers[liveSessionId]?.removeIf { it.webSocketSession == session }
         if (sessionObservers[liveSessionId]?.isEmpty() == true) {
@@ -145,7 +156,8 @@ class SessionWebsocketHandler(
         }
 
         try {
-            when (val webSocketMessage = objectMapper.readValue(message.payload, WebSocketMessage::class.java)) {
+            val webSocketMessage = decodeMessage(session, message.payload) ?: return
+            when (webSocketMessage) {
                 is UpdateContentMessage -> {
                     val updatedSession = sessionService.updateContent(
                         liveSessionId,
@@ -212,6 +224,10 @@ class SessionWebsocketHandler(
                     sessionService.cancelQuery(liveSessionId)
                     logger.info("Query cancelled for session: $liveSessionId")
                 }
+
+                is ChunkMessage -> {
+                    throw IllegalArgumentException("Nested WebSocket message chunks are not supported")
+                }
             }
         } catch (e: AccessDeniedException) {
             logger.warn("Access denied for session: $liveSessionId", e)
@@ -220,6 +236,20 @@ class SessionWebsocketHandler(
             logger.error("Error processing message", e)
             sendErrorResponseMessage(session, "Error processing message", liveSessionId)
         }
+    }
+
+    private fun decodeMessage(session: WebSocketSession, payload: String): WebSocketMessage? {
+        val message = objectMapper.readValue(payload, WebSocketMessage::class.java)
+        if (message !is ChunkMessage) {
+            return message
+        }
+
+        val buffers = requestChunkBuffers.computeIfAbsent(session.id) { LinkedHashMap() }
+        val assembledPayload = synchronized(buffers) {
+            WebSocketMessageAssembler.append(buffers, message)
+        } ?: return null
+
+        return objectMapper.readValue(assembledPayload, WebSocketMessage::class.java)
     }
 
     private fun broadcastResultMessage(sessionId: LiveSessionId, resultMessage: ResultMessage) {
