@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kviklet
+  namespace: 7s-tools
+  annotations:
+    kviklet.dev/source-commit: "94f91df3840dedfce7527b557e257e0bed5f448f"
+    kviklet.dev/source-version: "dev"
+    kviklet.dev/image-build: "https://github.com/shaqman/kviklet/actions/runs/36852907328"
+spec:
+  minReadySeconds: 10
+  template:
+    spec:
+      containers:
+        - name: kviklet
+          image: ghcr.io/shaqman/kviklet@sha256:1cea6e9697f2725fdb1c424b32af85f7d25ddcd8e0a1c7567d536cb571d96243
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
