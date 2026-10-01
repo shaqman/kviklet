@@ -72,6 +72,7 @@ const chunkMessage = z.object({
   index: z.number().int().nonnegative(),
   total: z.number().int().positive(),
   payload: z.string(),
+  encoding: z.literal("gzip").optional(),
 });
 
 const responseMessage = z.discriminatedUnion("type", [

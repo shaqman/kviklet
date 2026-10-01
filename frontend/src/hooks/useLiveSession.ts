@@ -13,6 +13,8 @@ import useNotification from "./useNotification";
 import {
   appendLiveSessionChunk,
   encodeLiveSessionMessage,
+  decodeLiveSessionResponse,
+  supportsGzipResponses,
   type ChunkBuffer,
 } from "../api/LiveSessionChunks";
 
@@ -24,6 +26,7 @@ const useLiveSession = (
 ) => {
   const ws = useRef<WebSocket | null>(null);
   const chunkBuffersRef = useRef<Map<string, ChunkBuffer>>(new Map());
+  const rejectedChunkIdsRef = useRef<Set<string>>(new Set());
   const executeResolverRef = useRef<ExecuteResolver | null>(null);
   const inFlightRefsRef = useRef<Set<string>>(new Set());
   const [results, setResults] = useState<ExecuteResponseResult[] | undefined>(
@@ -38,25 +41,39 @@ const useLiveSession = (
 
   useEffect(() => {
     // Initialize WebSocket connection
-    const socket = new WebSocket(`${websocketBaseUrl}/sql/${requestId}`);
+    const compression = supportsGzipResponses() ? "?compression=gzip" : "";
+    const socket = new WebSocket(
+      `${websocketBaseUrl}/sql/${requestId}${compression}`,
+    );
+    let active = true;
+    let messageQueue = Promise.resolve();
 
     socket.onopen = () => {
       console.log("WebSocket connection established");
     };
 
     socket.onmessage = (event) => {
-      console.log("WebSocket message received:", event.data);
-      try {
-        handleWebSocketMessage(JSON.parse(event.data as string));
-      } catch (err) {
-        console.error("Failed to parse WebSocket message:", err);
-        addNotification({
-          type: "error",
-          title: "Websocket error",
-          text: "Failed to parse server response",
+      // Keep responses ordered while a completed gzip message decompresses.
+      messageQueue = messageQueue
+        .then(async () => {
+          if (active)
+            await handleWebSocketMessage(
+              JSON.parse(event.data as string),
+              () => active,
+            );
+        })
+        .catch((err) => {
+          if (!active) return;
+          console.error("Failed to parse WebSocket message:", err);
+          addNotification({
+            type: "error",
+            title: "Websocket error",
+            text: "Failed to parse server response",
+          });
+          setIsLoading(false);
+          executeResolverRef.current?.();
+          executeResolverRef.current = null;
         });
-        setIsLoading(false);
-      }
     };
 
     socket.onerror = (error) => {
@@ -70,8 +87,10 @@ const useLiveSession = (
     };
 
     socket.onclose = (event) => {
+      active = false;
       console.log("WebSocket connection closed", event);
       chunkBuffersRef.current.clear();
+      rejectedChunkIdsRef.current.clear();
       if (!event.wasClean) {
         console.error("Connection lost unexpectedly. Please refresh the page.");
         addNotification({
@@ -86,14 +105,20 @@ const useLiveSession = (
     ws.current = socket;
 
     return () => {
+      active = false;
       chunkBuffersRef.current.clear();
+      rejectedChunkIdsRef.current.clear();
       if (socket.readyState === WebSocket.OPEN) {
         socket.close();
       }
     };
   }, [requestId]);
 
-  const handleWebSocketMessage = (data: unknown) => {
+  const handleWebSocketMessage = async (
+    data: unknown,
+    isActive: () => boolean,
+  ): Promise<void> => {
+    if (!isActive()) return;
     try {
       const message = responseMessage.safeParse(data);
 
@@ -105,24 +130,40 @@ const useLiveSession = (
           text: "Received invalid response from server",
         });
         setIsLoading(false);
+        executeResolverRef.current?.();
+        executeResolverRef.current = null;
         return;
       }
 
       const messageData = message.data;
 
       if (messageData.type === "chunk") {
-        const assembledMessage = appendLiveSessionChunk(
-          chunkBuffersRef.current,
-          messageData,
-        );
-        if (assembledMessage === undefined) {
-          return;
+        if (rejectedChunkIdsRef.current.has(messageData.messageId)) return;
+        let assembledMessage;
+        try {
+          assembledMessage = appendLiveSessionChunk(
+            chunkBuffersRef.current,
+            messageData,
+          );
+          if (assembledMessage === undefined) return;
+          const response = await decodeLiveSessionResponse(
+            assembledMessage,
+            messageData.encoding,
+          );
+          if (isActive())
+            await handleWebSocketMessage(JSON.parse(response), isActive);
+        } catch (error) {
+          const rejected = rejectedChunkIdsRef.current;
+          if (rejected.size >= 16) {
+            const oldest = rejected.values().next();
+            if (!oldest.done) rejected.delete(oldest.value);
+          }
+          rejected.add(messageData.messageId);
+          throw error;
         }
-        handleWebSocketMessage(JSON.parse(assembledMessage));
         return;
       }
 
-      console.log(messageData);
       switch (messageData.type) {
         case "status":
           // If this ref is in our in-flight set, it's our own echo - ignore it
@@ -176,6 +217,7 @@ const useLiveSession = (
           break;
       }
     } catch (err) {
+      if (!isActive()) return;
       console.error("Error handling WebSocket message:", err);
       addNotification({
         type: "error",
@@ -183,6 +225,8 @@ const useLiveSession = (
         text: "Failed to process server response",
       });
       setIsLoading(false);
+      executeResolverRef.current?.();
+      executeResolverRef.current = null;
     }
   };
 

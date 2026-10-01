@@ -7,6 +7,10 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import java.util.zip.GZIPInputStream
 
 class WebSocketMessageChunkerTest {
     private val objectMapper = jacksonObjectMapper()
@@ -102,5 +106,53 @@ class WebSocketMessageChunkerTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `gzip response beyond the legacy limit reconstructs exact UTF-8 JSON`() {
+        val message = StatusMessage(
+            sessionId = LiveSessionId("session"),
+            consoleContent = "result 😀\n".repeat(700_000),
+            observers = emptyList(),
+            ref = "ref",
+        )
+        val serialized = objectMapper.writeValueAsString(message)
+        assertTrue(serialized.length > MAX_REASSEMBLED_MESSAGE_SIZE)
+        val frames = WebSocketMessageChunker.encode(message, objectMapper, gzip = true)
+        assertTrue(frames.size < MAX_CHUNK_COUNT)
+        assertTrue(frames.all { it.length <= MAX_WEBSOCKET_MESSAGE_SIZE })
+        val nodes = frames.map(objectMapper::readTree)
+        assertTrue(nodes.all { it.get("encoding").asText() == "gzip" })
+        val compressed = Base64.getDecoder().decode(nodes.joinToString("") { it.get("payload").asText() })
+        val expanded = GZIPInputStream(ByteArrayInputStream(compressed)).use {
+            it.readBytes().toString(Charsets.UTF_8)
+        }
+        // Jackson's UTF-8 generator escapes supplementary Unicode characters
+        // differently from its String generator. Compare the actual wire bytes
+        // and parsed JSON so both serialization fidelity and content are checked.
+        assertEquals(objectMapper.writeValueAsBytes(message).toString(Charsets.UTF_8), expanded)
+        assertEquals(objectMapper.readTree(serialized), objectMapper.readTree(expanded))
+        assertThrows(WebSocketResponseTooLargeException::class.java) {
+            WebSocketMessageChunker.encode(message, objectMapper)
+        }
+    }
+
+    @Test
+    fun `gzip capable clients keep small responses unchanged`() {
+        val message = ErrorResponseMessage(sessionId = LiveSessionId("session"), error = "error")
+        assertEquals(
+            listOf(objectMapper.writeValueAsString(message)),
+            WebSocketMessageChunker.encode(message, objectMapper, gzip = true),
+        )
+    }
+
+    @Test
+    fun `serialization limit counts bytes and rejects overflow before writing`() {
+        val bytes = ByteArrayOutputStream()
+        val output = LimitedResponseOutputStream(bytes, 4)
+        output.write("😀".toByteArray(Charsets.UTF_8))
+        assertEquals(4, output.size)
+        assertThrows(WebSocketResponseTooLargeException::class.java) { output.write(1) }
+        assertEquals(4, bytes.size())
     }
 }

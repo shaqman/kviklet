@@ -43,12 +43,7 @@ data class ExecuteMessage(val statement: String) : WebSocketMessage()
 
 object CancelMessage : WebSocketMessage()
 
-data class ChunkMessage(
-    val messageId: String,
-    val index: Int,
-    val total: Int,
-    val payload: String,
-) : WebSocketMessage()
+data class ChunkMessage(val messageId: String, val index: Int, val total: Int, val payload: String) : WebSocketMessage()
 
 sealed class ResponseMessage(open val sessionId: LiveSessionId)
 data class ErrorResponseMessage(val type: String = "error", override val sessionId: LiveSessionId, val error: String) :
@@ -280,7 +275,25 @@ class SessionWebsocketHandler(
 
     private fun sendMessage(session: WebSocketSession, message: ResponseMessage) {
         try {
-            val frames = WebSocketMessageChunker.encode(message, objectMapper)
+            val gzip = session.uri?.let {
+                UriComponentsBuilder.fromUri(it).build().queryParams.getFirst("compression") == "gzip"
+            } == true
+            val frames = try {
+                WebSocketMessageChunker.encode(message, objectMapper, gzip)
+            } catch (_: WebSocketResponseTooLargeException) {
+                WebSocketMessageChunker.encode(
+                    ErrorResponseMessage(
+                        sessionId = message.sessionId,
+                        error = if (gzip) {
+                            "Response exceeds the live-session size limit. Narrow the query or download the result."
+                        } else {
+                            "Response is too large for this browser session. Refresh to enable compressed responses, " +
+                                "or narrow the query or download the result."
+                        },
+                    ),
+                    objectMapper,
+                )
+            }
             logger.info(
                 "Sending ${message::class.simpleName} message to ${session.id} in ${frames.size} frame(s)",
             )
